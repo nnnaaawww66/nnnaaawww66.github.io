@@ -23,9 +23,8 @@
             object-fit: cover;
             z-index: 1;
             transform: scaleX(-1);
-            /* 增强美颜滤镜：更强美白、磨皮、去皱（通过增加模糊和降低对比度锐化） */
-            filter: brightness(1.15) contrast(0.98) saturate(1.25) blur(0.8px) sepia(0.05) hue-rotate(355deg) grayscale(0%) opacity(1);
-            /* 额外增加轻微高斯模糊柔化皮肤，去除细小皱纹 */
+            /* 增强美颜滤镜 */
+            filter: brightness(1.15) contrast(0.98) saturate(1.25) blur(0.8px) sepia(0.05) hue-rotate(355deg);
         }
         #canvas-container {
             position: absolute;
@@ -166,7 +165,8 @@
     <div id="loading">
         ✨ 粒子幻境 ✨
         <div class="instruction">
-            👐 数字1-3切换文字 &nbsp;|&nbsp; ✊ 握拳爱心 &nbsp;|&nbsp; ✋ 张开扩散
+            👐 数字1-3切换文字 &nbsp;|&nbsp; ✊ 握拳爱心 &nbsp;|&nbsp; ✋ 张开扩散<br>
+            ✨ 双手划过区域都会推开粒子
         </div>
         <button class="start-btn" id="startBtn">🎥 启动摄像头</button>
     </div>
@@ -188,8 +188,12 @@
         let lerpSpeed = 0.012;         
         let targetParticleSize = 0.52;
         
+        // 双手位置及可见性
         let leftHandPos = new THREE.Vector3(999, 999, 999);
+        let rightHandPos = new THREE.Vector3(999, 999, 999);
         let leftHandVisible = false;
+        let rightHandVisible = false;
+        
         let rightHandRotation = 0;
         let targetRightHandRotation = 0;
         
@@ -212,7 +216,6 @@
         let isCameraRunning = false;
         let isStarting = false;
         
-        // 显示短暂提示
         function showToast(message, duration = 3000) {
             toastTip.textContent = message;
             toastTip.style.opacity = '1';
@@ -221,7 +224,6 @@
             }, duration);
         }
         
-        // 页面启动时显示横屏建议
         setTimeout(() => {
             if (window.innerHeight > window.innerWidth) {
                 showToast('📱 建议旋转至横屏，文字显示更完整', 4000);
@@ -443,9 +445,12 @@
         
         function onResults(results) {
             if (!scene || !isCameraRunning) return;
+            
             let anyFist = false, anyGesture = 0;
-            let leftDetected = false, tempLeftPos = new THREE.Vector3(999,999,999);
+            // 临时存储左右手位置
+            let tempLeft = null, tempRight = null;
             let rightAngle = 0, rightExists = false;
+            
             if (results.multiHandLandmarks && results.multiHandedness) {
                 for (let idx = 0; idx < results.multiHandLandmarks.length; idx++) {
                     const lm = results.multiHandLandmarks[idx];
@@ -458,26 +463,45 @@
                     else if (fingersUp[0] && fingersUp[1] && !fingersUp[2] && !fingersUp[3]) g = 2;
                     else if (fingersUp[0] && fingersUp[1] && fingersUp[2] && !fingersUp[3]) g = 3;
                     if (g > anyGesture) anyGesture = g;
-                    if (lm[0].x > 0.5) {
-                        leftDetected = true;
-                        const nx = (1 - lm[9].x), ny = lm[9].y;
-                        tempLeftPos.set((nx-0.5)*worldWidth, -(ny-0.5)*worldHeight, 0);
-                    }
-                    if (label === "Right") {
+                    
+                    // 转换坐标到3D世界
+                    const normX = (1 - lm[9].x); // 因为视频镜像
+                    const normY = lm[9].y;
+                    const posX = (normX - 0.5) * worldWidth;
+                    const posY = -(normY - 0.5) * worldHeight;
+                    const posZ = 0;
+                    
+                    if (label === "Left") {
+                        tempLeft = new THREE.Vector3(posX, posY, posZ);
+                    } else if (label === "Right") {
+                        tempRight = new THREE.Vector3(posX, posY, posZ);
                         rightExists = true;
                         const dx = lm[9].x - lm[0].x, dy = lm[9].y - lm[0].y;
                         rightAngle = Math.atan2(dy, dx) + Math.PI/2;
                     }
                 }
             }
-            leftHandVisible = leftDetected;
-            if (leftDetected) leftHandPos.copy(tempLeftPos);
+            
+            // 更新双手可见性和位置
+            leftHandVisible = (tempLeft !== null);
+            rightHandVisible = (tempRight !== null);
+            if (leftHandVisible) leftHandPos.copy(tempLeft);
+            if (rightHandVisible) rightHandPos.copy(tempRight);
             if (rightExists) targetRightHandRotation = rightAngle;
-            if (anyFist) currentState = 'HEART';
-            else if (anyGesture === 1) currentState = 'TEXT_1';
-            else if (anyGesture === 2) currentState = 'TEXT_2';
-            else if (anyGesture === 3) currentState = 'TEXT_3';
-            else currentState = 'DIFFUSE';
+            
+            // 状态机：握拳优先于手势
+            if (anyFist) {
+                currentState = 'HEART';
+            } else if (anyGesture === 1) {
+                currentState = 'TEXT_1';
+            } else if (anyGesture === 2) {
+                currentState = 'TEXT_2';
+            } else if (anyGesture === 3) {
+                currentState = 'TEXT_3';
+            } else {
+                currentState = 'DIFFUSE';
+            }
+            
             const tipMap = { 'DIFFUSE': '✨ 飘逸扩散 ✨', 'HEART': '💖 粉嫩爱心 💖', 'TEXT_1': '🌟 HELLO 🌟', 'TEXT_2': '🌸 我是青青 🌸', 'TEXT_3': '🎉 很高兴 🎉' };
             statusTip.innerText = tipMap[currentState];
             updateTargetPositions();
@@ -576,25 +600,44 @@
                 particles.rotation.z += (0 - particles.rotation.z) * 0.08;
             }
             const pos = geometry.attributes.position.array;
-            const repelR = 27, repelPower = 2.5;
+            const repelRadius = 27;
+            const repelPower = 2.5;
             const rotZ = particles.rotation.z;
             const cosZ = Math.cos(-rotZ), sinZ = Math.sin(-rotZ);
+            
             for (let i = 0; i < MAX_PARTICLES; i++) {
-                const i3 = i*3;
+                const i3 = i * 3;
+                // 向目标位置移动
                 pos[i3] += (targetPositions[i3] - pos[i3]) * lerpSpeed;
                 pos[i3+1] += (targetPositions[i3+1] - pos[i3+1]) * lerpSpeed;
                 pos[i3+2] += (targetPositions[i3+2] - pos[i3+2]) * lerpSpeed;
+                
+                // 左手排斥
                 if (leftHandVisible && isCameraRunning) {
                     const lx = leftHandPos.x * cosZ - leftHandPos.y * sinZ;
                     const ly = leftHandPos.x * sinZ + leftHandPos.y * cosZ;
                     const dx = pos[i3] - lx, dy = pos[i3+1] - ly, dz = pos[i3+2] - leftHandPos.z;
                     const dsq = dx*dx + dy*dy + dz*dz;
-                    if (dsq < repelR*repelR) {
+                    if (dsq < repelRadius * repelRadius) {
                         const dist = Math.sqrt(dsq);
-                        const force = (repelR - dist) / repelR * repelPower;
-                        pos[i3] += (dx/dist) * force;
-                        pos[i3+1] += (dy/dist) * force;
-                        pos[i3+2] += (dz/dist) * force;
+                        const force = (repelRadius - dist) / repelRadius * repelPower;
+                        pos[i3] += (dx / dist) * force;
+                        pos[i3+1] += (dy / dist) * force;
+                        pos[i3+2] += (dz / dist) * force;
+                    }
+                }
+                // 右手排斥
+                if (rightHandVisible && isCameraRunning) {
+                    const rx = rightHandPos.x * cosZ - rightHandPos.y * sinZ;
+                    const ry = rightHandPos.x * sinZ + rightHandPos.y * cosZ;
+                    const dx = pos[i3] - rx, dy = pos[i3+1] - ry, dz = pos[i3+2] - rightHandPos.z;
+                    const dsq = dx*dx + dy*dy + dz*dz;
+                    if (dsq < repelRadius * repelRadius) {
+                        const dist = Math.sqrt(dsq);
+                        const force = (repelRadius - dist) / repelRadius * repelPower;
+                        pos[i3] += (dx / dist) * force;
+                        pos[i3+1] += (dy / dist) * force;
+                        pos[i3+2] += (dz / dist) * force;
                     }
                 }
             }
