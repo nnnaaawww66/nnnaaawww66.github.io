@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D粒子手势交互系统 - 饱满爱心与完整汉字</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #video-background {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+            transform: scaleX(-1);
+            filter: brightness(0.75) contrast(1.2) saturate(1.05);
+        }
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            z-index: 10;
+            font-size: 18px;
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(12px);
+            padding: 16px 28px;
+            border-radius: 40px;
+            text-align: center;
+            letter-spacing: 1px;
+            border: 1px solid rgba(255,105,180,0.6);
+            box-shadow: 0 0 40px rgba(255,105,180,0.4);
+            font-weight: 500;
+            transition: opacity 0.5s;
+            pointer-events: auto;
+        }
+        .instruction {
+            font-size: 11px;
+            color: #ffc0cb;
+            margin-top: 8px;
+            opacity: 0.9;
+        }
+        .status-tip {
+            position: absolute;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.55);
+            backdrop-filter: blur(8px);
+            padding: 4px 16px;
+            border-radius: 30px;
+            color: #ffb6c1;
+            font-size: 13px;
+            z-index: 10;
+            font-family: monospace;
+            pointer-events: none;
+            border: 1px solid rgba(255,105,180,0.4);
+            font-weight: bold;
+            letter-spacing: 1px;
+            white-space: nowrap;
+            text-shadow: 0 0 6px rgba(255,105,180,0.5);
+        }
+        .error-message {
+            position: absolute;
+            bottom: 80px;
+            left: 20px;
+            right: 20px;
+            background: rgba(220, 20, 60, 0.95);
+            color: white;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 12px;
+            z-index: 10;
+            text-align: center;
+            backdrop-filter: blur(8px);
+            pointer-events: none;
+            font-weight: 500;
+            transition: opacity 0.3s;
+        }
+        .start-btn {
+            background: linear-gradient(135deg, #ff69b4, #ff1493);
+            border: none;
+            color: white;
+            padding: 10px 26px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 40px;
+            cursor: pointer;
+            margin-top: 12px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 0 20px rgba(255,105,180,0.5);
+            font-family: inherit;
+        }
+        .start-btn:hover {
+            transform: scale(1.03);
+            box-shadow: 0 0 30px rgba(255,105,180,0.8);
+        }
+        @media (max-width: 600px) {
+            .instruction { font-size: 9px; }
+            .status-tip { font-size: 11px; top: 10px; padding: 3px 12px; }
+            #loading { font-size: 15px; padding: 12px 20px; width: 80%; }
+            .start-btn { padding: 8px 20px; font-size: 14px; }
+            .error-message { font-size: 10px; bottom: 60px; }
+        }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.158.0/build/three.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+    <video id="video-background" autoplay playsinline muted></video>
+    <div id="canvas-container"></div>
+    <div id="loading">
+        ✨ 粒子幻境 ✨
+        <div class="instruction">
+            👐 数字1-3切换文字 &nbsp;|&nbsp; ✊ 握拳爱心 &nbsp;|&nbsp; ✋ 张开扩散
+        </div>
+        <button class="start-btn" id="startBtn">🎥 启动摄像头</button>
+    </div>
+    <div class="status-tip" id="status-tip">✨ 等待启动</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ======================= 高密度配置 =======================
+        const MAX_PARTICLES = 128000;
+        const CORE_PARTICLES = 82000;
+        const FLOATING_PARTICLES = MAX_PARTICLES - CORE_PARTICLES;
+        
+        let scene, camera, renderer, particles, geometry, material;
+        let positionsAttr, targetPositions, colorsAttr;
+        
+        let currentState = 'DIFFUSE';
+        let lerpSpeed = 0.012;         
+        let targetParticleSize = 0.52;
+        
+        let leftHandPos = new THREE.Vector3(999, 999, 999);
+        let leftHandVisible = false;
+        let rightHandRotation = 0;
+        let targetRightHandRotation = 0;
+        
+        let text1Core = [], text1Aura = [];
+        let text2Core = [], text2Aura = [];
+        let text3Core = [], text3Aura = [];
+        let heartCore = [], heartAura = [];
+        let diffuseTargets = [];
+        
+        const videoElement = document.getElementById('video-background');
+        const loadingElement = document.getElementById('loading');
+        const statusTip = document.getElementById('status-tip');
+        const startBtn = document.getElementById('startBtn');
+        
+        let worldWidth = 100, worldHeight = 100;
+        let cameraStream = null;
+        let handsInstance = null;
+        let cameraInstance = null;
+        let isCameraRunning = false;
+        let isStarting = false;
+        
+        function initThreeJS() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = null;
+            camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.3, 500);
+            camera.position.z = 118;
+            camera.position.y = 0;
+            const vFov = camera.fov * Math.PI / 180;
+            worldHeight = 2 * Math.tan(vFov / 2) * camera.position.z;
+            worldWidth = worldHeight * camera.aspect;
+            renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+            createParticles();
+            generateAllShapes();
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+        
+        function createParticles() {
+            geometry = new THREE.BufferGeometry();
+            positionsAttr = new Float32Array(MAX_PARTICLES * 3);
+            targetPositions = new Float32Array(MAX_PARTICLES * 3);
+            colorsAttr = new Float32Array(MAX_PARTICLES * 3);
+            const pinkDeep = new THREE.Color(0xff3388);
+            const pinkMid = new THREE.Color(0xff69b4);
+            const pinkLight = new THREE.Color(0xffb6c1);
+            const whiteSoft = new THREE.Color(0xffe4e8);
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const i3 = i * 3;
+                const radius = 95 * Math.pow(Math.random(), 0.6);
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.sin(phi) * Math.sin(theta) * 0.7;
+                const z = radius * Math.cos(phi) * 0.6 + (Math.random() - 0.5) * 35;
+                positionsAttr[i3] = x;
+                positionsAttr[i3+1] = y;
+                positionsAttr[i3+2] = z;
+                targetPositions[i3] = x;
+                targetPositions[i3+1] = y;
+                targetPositions[i3+2] = z;
+                let finalColor;
+                const rand = Math.random();
+                if (rand < 0.4) finalColor = pinkDeep.clone().lerp(pinkMid, Math.random());
+                else if (rand < 0.7) finalColor = pinkMid.clone().lerp(pinkLight, Math.random());
+                else finalColor = pinkLight.clone().lerp(whiteSoft, Math.random());
+                colorsAttr[i3] = finalColor.r;
+                colorsAttr[i3+1] = finalColor.g;
+                colorsAttr[i3+2] = finalColor.b;
+            }
+            geometry.setAttribute('position', new THREE.BufferAttribute(positionsAttr, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colorsAttr, 3));
+            material = new THREE.PointsMaterial({ size: targetParticleSize, vertexColors: true, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false });
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+        }
+        
+        function generateAllShapes() {
+            console.log("生成高密度爱心与完整汉字...");
+            const textVerticalOffset = 12;
+            const t1 = generateSoftTextWithAura("HELLO", 280, 0.086, CORE_PARTICLES, FLOATING_PARTICLES, textVerticalOffset);
+            text1Core = t1.core; text1Aura = t1.aura;
+            const t2 = generateSoftTextWithAura("我是青青", 240, 0.092, CORE_PARTICLES, FLOATING_PARTICLES, textVerticalOffset);
+            text2Core = t2.core; text2Aura = t2.aura;
+            const t3 = generateSoftTextWithAura("很高兴认识你", 200, 0.089, CORE_PARTICLES, FLOATING_PARTICLES, textVerticalOffset);
+            text3Core = t3.core; text3Aura = t3.aura;
+            const heart = generatePlumpHeart(CORE_PARTICLES, FLOATING_PARTICLES);
+            heartCore = heart.core; heartAura = heart.aura;
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const radius = 105 * Math.pow(Math.random(), 0.55);
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.sin(phi) * Math.sin(theta) * 0.75;
+                const z = radius * Math.cos(phi) * 0.7 + (Math.random() - 0.5) * 38;
+                diffuseTargets.push(new THREE.Vector3(x, y, z));
+            }
+        }
+        
+        function generateSoftTextWithAura(text, fontSize, scale, coreCount, auraCount, verticalOffset) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2400;
+            canvas.height = 900;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `${fontSize}px "Microsoft YaHei", "PingFang SC", "Segoe UI", "KaiTi"`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = 'rgba(255,255,255,0.25)';
+            for (let i = 0; i < 3; i++) {
+                ctx.fillText(text, canvas.width / 2 + (i-1)*1.2, canvas.height / 2 + (i-1)*1.2);
+            }
+            ctx.globalCompositeOperation = 'source-over';
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imgData.data;
+            const corePoints = [];
+            for (let y = 0; y < canvas.height; y += 1.0) {
+                for (let x = 0; x < canvas.width; x += 1.0) {
+                    const idx = (Math.floor(y) * canvas.width + Math.floor(x)) * 4;
+                    const brightness = data[idx];
+                    if (brightness > 80 && (brightness > 200 || Math.random() < (brightness - 80) / 200)) {
+                        const px = (x - canvas.width / 2) * scale;
+                        let py = -(y - canvas.height / 2) * scale;
+                        py += verticalOffset;
+                        corePoints.push(new THREE.Vector3(px, py, (Math.random() - 0.5) * 1.0));
+                    }
+                }
+            }
+            while (corePoints.length < coreCount) corePoints.push(corePoints[Math.floor(Math.random() * corePoints.length)].clone());
+            const finalCore = corePoints.slice(0, coreCount);
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const p of finalCore) {
+                if (p.x < minX) minX = p.x;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.y > maxY) maxY = p.y;
+            }
+            const centerX = (minX + maxX) / 2;
+            const centerY = (minY + maxY) / 2;
+            const width = maxX - minX;
+            const height = maxY - minY;
+            const outerRadius = Math.max(width, height) * 0.68;
+            const auraPoints = [];
+            for (let i = 0; i < auraCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const rad = outerRadius + 10 + Math.random() * 30;
+                let x = centerX + Math.cos(angle) * rad;
+                let y = centerY + Math.sin(angle) * rad * 0.9;
+                x += (Math.random() - 0.5) * 12;
+                y += (Math.random() - 0.5) * 10;
+                const z = (Math.random() - 0.5) * 12;
+                auraPoints.push(new THREE.Vector3(x, y, z));
+            }
+            return { core: finalCore, aura: auraPoints };
+        }
+        
+        function generatePlumpHeart(coreCount, auraCount) {
+            const corePoints = [];
+            for (let i = 0; i < coreCount * 0.7; i++) {
+                const t = Math.random() * Math.PI * 2;
+                const r = Math.pow(Math.random(), 0.7);
+                const xRaw = 16 * Math.pow(Math.sin(t), 3);
+                const yRaw = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+                const scaleFactor = 1.82;
+                let x = xRaw * scaleFactor * r;
+                let y = (yRaw * scaleFactor * r) - 2.2;
+                const z = (Math.sin(t * 3) * 1.2 + (Math.random() - 0.5) * 2.2) * (1 - r * 0.3);
+                corePoints.push(new THREE.Vector3(x, y, z));
+            }
+            const innerCount = coreCount * 0.2;
+            for (let i = 0; i < innerCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const rad = Math.pow(Math.random(), 1.2) * 11;
+                const xOff = Math.cos(angle) * rad;
+                const yOff = Math.sin(angle) * rad * 0.9 - 1.2;
+                corePoints.push(new THREE.Vector3(xOff, yOff, (Math.random() - 0.5) * 3.5));
+            }
+            const edgeCount = coreCount * 0.1;
+            for (let i = 0; i < edgeCount; i++) {
+                const t = Math.random() * Math.PI * 2;
+                const xRaw = 16 * Math.pow(Math.sin(t), 3);
+                const yRaw = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+                const scaleFactor = 1.82;
+                let x = xRaw * scaleFactor;
+                let y = yRaw * scaleFactor - 2.2;
+                x += (Math.random() - 0.5) * 1.2;
+                y += (Math.random() - 0.5) * 1.2;
+                corePoints.push(new THREE.Vector3(x, y, (Math.random() - 0.5) * 2.5));
+            }
+            while (corePoints.length < coreCount) corePoints.push(corePoints[Math.floor(Math.random() * corePoints.length)].clone());
+            const finalCore = corePoints.slice(0, coreCount);
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const p of finalCore) {
+                if (p.x < minX) minX = p.x;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.y > maxY) maxY = p.y;
+            }
+            const centerX = (minX + maxX) / 2;
+            const centerY = (minY + maxY) / 2;
+            const width = maxX - minX;
+            const height = maxY - minY;
+            const outerRad = Math.max(width, height) * 0.65;
+            const auraPoints = [];
+            for (let i = 0; i < auraCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const rad = outerRad + 10 + Math.random() * 32;
+                let x = centerX + Math.cos(angle) * rad;
+                let y = centerY + Math.sin(angle) * rad * 0.85;
+                x += (Math.random() - 0.5) * 10;
+                y += (Math.random() - 0.5) * 9;
+                const z = (Math.random() - 0.5) * 14;
+                auraPoints.push(new THREE.Vector3(x, y, z));
+            }
+            return { core: finalCore, aura: auraPoints };
+        }
+        
+        function setupMediaPipe() {
+            if (!window.Hands) { showError("MediaPipe 加载失败"); return false; }
+            handsInstance = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+            handsInstance.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+            handsInstance.onResults(onResults);
+            return true;
+        }
+        
+        function onResults(results) {
+            if (!scene || !isCameraRunning) return;
+            let anyFist = false, anyGesture = 0;
+            let leftDetected = false, tempLeftPos = new THREE.Vector3(999,999,999);
+            let rightAngle = 0, rightExists = false;
+            if (results.multiHandLandmarks && results.multiHandedness) {
+                for (let idx = 0; idx < results.multiHandLandmarks.length; idx++) {
+                    const lm = results.multiHandLandmarks[idx];
+                    const label = results.multiHandedness[idx].label;
+                    const fingersUp = [lm[8].y < lm[6].y, lm[12].y < lm[10].y, lm[16].y < lm[14].y, lm[20].y < lm[18].y];
+                    const upCnt = fingersUp.filter(v=>v).length;
+                    if (upCnt === 0) anyFist = true;
+                    let g = 0;
+                    if (fingersUp[0] && !fingersUp[1] && !fingersUp[2] && !fingersUp[3]) g = 1;
+                    else if (fingersUp[0] && fingersUp[1] && !fingersUp[2] && !fingersUp[3]) g = 2;
+                    else if (fingersUp[0] && fingersUp[1] && fingersUp[2] && !fingersUp[3]) g = 3;
+                    if (g > anyGesture) anyGesture = g;
+                    if (lm[0].x > 0.5) {
+                        leftDetected = true;
+                        const nx = (1 - lm[9].x), ny = lm[9].y;
+                        tempLeftPos.set((nx-0.5)*worldWidth, -(ny-0.5)*worldHeight, 0);
+                    }
+                    if (label === "Right") {
+                        rightExists = true;
+                        const dx = lm[9].x - lm[0].x, dy = lm[9].y - lm[0].y;
+                        rightAngle = Math.atan2(dy, dx) + Math.PI/2;
+                    }
+                }
+            }
+            leftHandVisible = leftDetected;
+            if (leftDetected) leftHandPos.copy(tempLeftPos);
+            if (rightExists) targetRightHandRotation = rightAngle;
+            if (anyFist) currentState = 'HEART';
+            else if (anyGesture === 1) currentState = 'TEXT_1';
+            else if (anyGesture === 2) currentState = 'TEXT_2';
+            else if (anyGesture === 3) currentState = 'TEXT_3';
+            else currentState = 'DIFFUSE';
+            const tipMap = { 'DIFFUSE': '✨ 飘逸扩散 ✨', 'HEART': '💖 粉嫩爱心 💖', 'TEXT_1': '🌟 HELLO 🌟', 'TEXT_2': '🌸 我是青青 🌸', 'TEXT_3': '🎉 很高兴 🎉' };
+            statusTip.innerText = tipMap[currentState];
+            updateTargetPositions();
+        }
+        
+        function updateTargetPositions() {
+            let coreArr = null, auraArr = null;
+            let isShape = false;
+            if (currentState === 'DIFFUSE') {
+                isShape = false;
+                lerpSpeed = 0.01;
+                targetParticleSize = 0.52;
+            } else {
+                isShape = true;
+                lerpSpeed = 0.13;
+                targetParticleSize = 0.55;
+                if (currentState === 'TEXT_1') { coreArr = text1Core; auraArr = text1Aura; }
+                else if (currentState === 'TEXT_2') { coreArr = text2Core; auraArr = text2Aura; }
+                else if (currentState === 'TEXT_3') { coreArr = text3Core; auraArr = text3Aura; }
+                else if (currentState === 'HEART') { coreArr = heartCore; auraArr = heartAura; }
+            }
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const i3 = i * 3;
+                if (!isShape) {
+                    if (i < diffuseTargets.length) {
+                        targetPositions[i3] = diffuseTargets[i].x;
+                        targetPositions[i3+1] = diffuseTargets[i].y;
+                        targetPositions[i3+2] = diffuseTargets[i].z;
+                    }
+                } else {
+                    if (i < CORE_PARTICLES && coreArr && i < coreArr.length) {
+                        targetPositions[i3] = coreArr[i].x;
+                        targetPositions[i3+1] = coreArr[i].y;
+                        targetPositions[i3+2] = coreArr[i].z;
+                    } else if (auraArr) {
+                        const idx = i - CORE_PARTICLES;
+                        if (idx < auraArr.length) {
+                            targetPositions[i3] = auraArr[idx].x;
+                            targetPositions[i3+1] = auraArr[idx].y;
+                            targetPositions[i3+2] = auraArr[idx].z;
+                        } else {
+                            targetPositions[i3] = (Math.random() - 0.5) * 200;
+                            targetPositions[i3+1] = (Math.random() - 0.5) * 150;
+                            targetPositions[i3+2] = (Math.random() - 0.5) * 100 - 50;
+                        }
+                    }
+                }
+            }
+        }
+        
+        async function startCamera() {
+            if (isCameraRunning || isStarting) return;
+            isStarting = true;
+            try {
+                loadingElement.innerHTML = "📷 请求摄像头...<div class='instruction'>请允许访问</div>";
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" } });
+                videoElement.srcObject = stream;
+                cameraStream = stream;
+                loadingElement.innerHTML = "🎥 启动手势识别...";
+                await new Promise(r => { videoElement.onloadedmetadata = () => { videoElement.play(); r(); }; });
+                if (!setupMediaPipe()) throw new Error("MediaPipe失败");
+                cameraInstance = new Camera(videoElement, { onFrame: async () => { if (handsInstance && isCameraRunning) await handsInstance.send({ image: videoElement }); }, width: 1280, height: 720 });
+                await cameraInstance.start();
+                isCameraRunning = true;
+                loadingElement.style.opacity = "0";
+                setTimeout(() => loadingElement.style.display = "none", 500);
+                statusTip.innerText = "✨ 飘逸扩散 ✨";
+            } catch (err) {
+                console.error(err);
+                let msg = err.name === 'NotAllowedError' ? "❌ 摄像头权限被拒绝" : (err.name === 'NotFoundError' ? "❌ 未检测到摄像头" : "❌ 启动失败");
+                showError(msg);
+                loadingElement.innerHTML = `✨ 失败 ✨<div class='instruction'>${msg}</div>`;
+                loadingElement.style.background = "rgba(220,20,60,0.9)";
+            } finally { isStarting = false; }
+        }
+        
+        function showError(msg) {
+            const div = document.createElement('div');
+            div.className = 'error-message';
+            div.innerHTML = msg;
+            document.body.appendChild(div);
+            setTimeout(() => { div.style.opacity = "0"; setTimeout(() => div.remove(), 3000); }, 5000);
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!particles) return;
+            material.size += (targetParticleSize - material.size) * 0.1;
+            if (currentState === 'DIFFUSE' && isCameraRunning) {
+                rightHandRotation += (targetRightHandRotation - rightHandRotation) * 0.07;
+                particles.rotation.z = rightHandRotation;
+            } else {
+                particles.rotation.z += (0 - particles.rotation.z) * 0.08;
+            }
+            const pos = geometry.attributes.position.array;
+            const repelR = 27, repelPower = 2.5;
+            const rotZ = particles.rotation.z;
+            const cosZ = Math.cos(-rotZ), sinZ = Math.sin(-rotZ);
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const i3 = i*3;
+                pos[i3] += (targetPositions[i3] - pos[i3]) * lerpSpeed;
+                pos[i3+1] += (targetPositions[i3+1] - pos[i3+1]) * lerpSpeed;
+                pos[i3+2] += (targetPositions[i3+2] - pos[i3+2]) * lerpSpeed;
+                if (leftHandVisible && isCameraRunning) {
+                    const lx = leftHandPos.x * cosZ - leftHandPos.y * sinZ;
+                    const ly = leftHandPos.x * sinZ + leftHandPos.y * cosZ;
+                    const dx = pos[i3] - lx, dy = pos[i3+1] - ly, dz = pos[i3+2] - leftHandPos.z;
+                    const dsq = dx*dx + dy*dy + dz*dz;
+                    if (dsq < repelR*repelR) {
+                        const dist = Math.sqrt(dsq);
+                        const force = (repelR - dist) / repelR * repelPower;
+                        pos[i3] += (dx/dist) * force;
+                        pos[i3+1] += (dy/dist) * force;
+                        pos[i3+2] += (dz/dist) * force;
+                    }
+                }
+            }
+            geometry.attributes.position.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            const vFov = camera.fov * Math.PI / 180;
+            worldHeight = 2 * Math.tan(vFov / 2) * camera.position.z;
+            worldWidth = worldHeight * camera.aspect;
+        }
+        
+        initThreeJS();
+        startBtn.addEventListener('click', startCamera);
+    </script>
+</body>
+</html>
